@@ -1,0 +1,126 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, Segoe UI, Roboto, Arial, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #111317;
+  color: #e8ecf1;
+}
+
+.container {
+  padding: 1rem;
+}
+
+h1 {
+  margin-top: 0;
+}
+
+.status {
+  color: #7ad3ff;
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.tab {
+  border: 1px solid #2f3744;
+  background: #1a2029;
+  color: #dce6f2;
+  border-radius: 6px;
+  padding: 0.45rem 0.75rem;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: #33455d;
+  border-color: #5f83ab;
+}
+
+.panel {
+  display: grid;
+  gap: 0.6rem;
+  background: #151a22;
+  border: 1px solid #2a3341;
+  border-radius: 8px;
+  padding: 0.9rem;
+}
+
+.split {
+  grid-template-columns: 1fr 1fr;
+}
+
+label {
+  color: #9db0c7;
+  font-size: 0.9rem;
+}
+
+input,
+textarea,
+button {
+  font: inherit;
+}
+
+input,
+textarea {
+  background: #0f131a;
+  color: #eaf0f7;
+  border: 1px solid #2f3c4d;
+  border-radius: 6px;
+  padding: 0.5rem;
+}
+
+textarea {
+  width: 100%;
+}
+
+button {
+  width: fit-content;
+  border-radius: 6px;
+  border: 1px solid #3a4e67;
+  background: #243446;
+  color: #e6f0fa;
+  padding: 0.5rem 0.8rem;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #2d425a;
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.file-list li {
+  margin-bottom: 0.4rem;
+}
+
+.muted {
+  color: #9ba6b4;
+  font-size: 0.85rem;
+}
+
+pre {
+  background: #0f131a;
+  border: 1px solid #2f3c4d;
+  border-radius: 6px;
+  padding: 0.8rem;
+  overflow: auto;
+}
