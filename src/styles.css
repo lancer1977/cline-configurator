@@ -124,3 +124,22 @@ pre {
   padding: 0.8rem;
   overflow: auto;
 }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.modal {
+  width: min(720px, 100%);
+  max-height: min(80vh, 900px);
+  overflow: auto;
+  background: #151a22;
+  border: 1px solid #2a3341;
+  border-radius: 10px;
+  padding: 1rem;
+}
