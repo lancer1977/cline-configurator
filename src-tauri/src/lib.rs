@@ -69,6 +69,266 @@ fn global_rules_path() -> Result<PathBuf, String> {
     Ok(home_dir()?.join("Documents").join("Cline").join("Rules"))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupResult {
+    success: bool,
+    backup_path: Option<String>,
+    error: Option<String>,
+}
+
+#[tauri::command]
+fn backup_config() -> BackupResult {
+    let config_path = match config_json_path() {
+        Ok(p) => p,
+        Err(e) => return BackupResult { success: false, backup_path: None, error: Some(e) },
+    };
+
+    if !config_path.exists() {
+        return BackupResult {
+            success: false,
+            backup_path: None,
+            error: Some(format!("Config file not found: {}", config_path.display())),
+        };
+    }
+
+    let config_content = match fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(e) => return BackupResult { success: false, backup_path: None, error: Some(format!("Failed to read config: {}", e)) },
+    };
+
+    if let Err(e) = serde_json::from_str::<Value>(&config_content) {
+        return BackupResult { success: false, backup_path: None, error: Some(format!("Invalid JSON in config: {}", e)) };
+    }
+
+    let backups = match backups_dir() {
+        Ok(b) => b,
+        Err(e) => return BackupResult { success: false, backup_path: None, error: Some(e) },
+    };
+
+    if let Err(e) = ensure_parent(&backups) {
+        return BackupResult { success: false, backup_path: None, error: Some(e) };
+    }
+
+    let timestamp = chrono_lite_timestamp();
+    let backup_filename = format!("config-{}.json", timestamp);
+    let backup_path = backups.join(&backup_filename);
+
+    if let Err(e) = fs::write(&backup_path, &config_content) {
+        return BackupResult { success: false, backup_path: None, error: Some(format!("Failed to write backup: {}", e)) };
+    }
+
+    BackupResult {
+        success: true,
+        backup_path: Some(backup_path.to_string_lossy().to_string()),
+        error: None,
+    }
+}
+
+fn chrono_lite_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = duration.as_secs();
+    let days = secs / 86400;
+    let remaining = secs % 86400;
+    let hours = remaining / 3600;
+    let mins = (remaining % 3600) / 60;
+    let seconds = remaining % 60;
+    let base_year = 1970;
+    let mut year = base_year;
+    let mut days_left = days as i64;
+    while days_in_year(year) <= days_left {
+        days_left -= days_in_year(year);
+        year += 1;
+    }
+    let month_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1;
+    for m in month_days.iter() {
+        if days_left < *m as i64 {
+            break;
+        }
+        days_left -= *m as i64;
+        month += 1;
+    }
+    let day = days_left + 1;
+    format!("{:04}-{:02}-{:02}-{:02}{:02}{:02}", year, month, day, hours, mins, seconds)
+}
+
+fn days_in_year(year: i64) -> i64 {
+    if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
+        366
+    } else {
+        365
+    }
+}
+
+fn backups_dir() -> Result<PathBuf, String> {
+    Ok(cline_dir()?.join("backups"))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupFile {
+    filename: String,
+    path: String,
+    created_at: String,
+}
+
+#[tauri::command]
+fn list_backups() -> Result<Vec<BackupFile>, String> {
+    let backups = backups_dir()?;
+
+    if !backups.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut backup_files: Vec<BackupFile> = Vec::new();
+
+    for entry in fs::read_dir(&backups).map_err(|e| format!("Failed to read backups dir: {}", e))? {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let path = entry.path();
+
+        if path.is_file() && path.extension().map(|e| e == "json").unwrap_or(false) {
+            let filename = path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            // Extract timestamp from filename format: config-YYYY-MM-DD-HHMMSS.json
+            let created_at = filename
+                .strip_prefix("config-")
+                .and_then(|s| s.strip_suffix(".json"))
+                .map(|s| {
+                    if s.len() >= 15 {
+                        format!("{}-{}-{} {}:{}:{}",
+                            &s[0..4], &s[4..6], &s[6..8],
+                            &s[8..10], &s[10..12], &s[12..14])
+                    } else {
+                        s.to_string()
+                    }
+                })
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            backup_files.push(BackupFile {
+                filename,
+                path: path.to_string_lossy().to_string(),
+                created_at,
+            });
+        }
+    }
+
+    // Sort by filename descending (newest first)
+    backup_files.sort_by(|a, b| b.filename.cmp(&a.filename));
+
+    Ok(backup_files)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestoreResult {
+    success: bool,
+    restored_from: Option<String>,
+    auto_backup_path: Option<String>,
+    error: Option<String>,
+}
+
+#[tauri::command]
+fn restore_config(backup_filename: String) -> RestoreResult {
+    let backups = match backups_dir() {
+        Ok(b) => b,
+        Err(e) => return RestoreResult { success: false, restored_from: None, auto_backup_path: None, error: Some(e) },
+    };
+
+    let backup_path = backups.join(&backup_filename);
+
+    if !backup_path.exists() {
+        return RestoreResult {
+            success: false,
+            restored_from: None,
+            auto_backup_path: None,
+            error: Some(format!("Backup file not found: {}", backup_filename)),
+        };
+    }
+
+    // Read and validate backup JSON before restoring
+    let backup_content = match fs::read_to_string(&backup_path) {
+        Ok(c) => c,
+        Err(e) => return RestoreResult { success: false, restored_from: None, auto_backup_path: None, error: Some(format!("Failed to read backup: {}", e)) },
+    };
+
+    if let Err(e) = serde_json::from_str::<Value>(&backup_content) {
+        return RestoreResult {
+            success: false,
+            restored_from: None,
+            auto_backup_path: None,
+            error: Some(format!("Invalid JSON in backup: {}", e)),
+        };
+    }
+
+    // Create automatic backup of current config before overwriting
+    let config_path = match config_json_path() {
+        Ok(p) => p,
+        Err(e) => return RestoreResult { success: false, restored_from: None, auto_backup_path: None, error: Some(e) },
+    };
+
+    let auto_backup_path = if config_path.exists() {
+        let current_content = match fs::read_to_string(&config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                return RestoreResult {
+                    success: false,
+                    restored_from: None,
+                    auto_backup_path: None,
+                    error: Some(format!("Failed to read current config for backup: {}", e)),
+                };
+            }
+        };
+
+        // Validate current config is valid JSON too
+        if let Err(e) = serde_json::from_str::<Value>(&current_content) {
+            return RestoreResult {
+                success: false,
+                restored_from: None,
+                auto_backup_path: None,
+                error: Some(format!("Current config is invalid JSON: {}", e)),
+            };
+        }
+
+        let timestamp = chrono_lite_timestamp();
+        let auto_backup_filename = format!("pre-restore-{}.json", timestamp);
+        let auto_path = backups.join(&auto_backup_filename);
+
+        if let Err(e) = fs::write(&auto_path, &current_content) {
+            return RestoreResult {
+                success: false,
+                restored_from: None,
+                auto_backup_path: None,
+                error: Some(format!("Failed to create pre-restore backup: {}", e)),
+            };
+        }
+
+        Some(auto_path.to_string_lossy().to_string())
+    } else {
+        None
+    };
+
+    // Write the restored config
+    if let Err(e) = fs::write(&config_path, &backup_content) {
+        return RestoreResult {
+            success: false,
+            restored_from: None,
+            auto_backup_path,
+            error: Some(format!("Failed to write restored config: {}", e)),
+        };
+    }
+
+    RestoreResult {
+        success: true,
+        restored_from: Some(backup_path.to_string_lossy().to_string()),
+        auto_backup_path,
+        error: None,
+    }
+}
+
 fn ensure_parent(path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed creating {:?}: {}", parent, e))?;
@@ -306,6 +566,9 @@ pub fn run() {
             write_text_file,
             list_ollama_models,
             generate_recommendations,
+            backup_config,
+            list_backups,
+            restore_config,
         ])
         .setup(|app| {
             let _ = app.handle();
