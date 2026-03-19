@@ -20,9 +20,43 @@ Desktop GUI for managing Cline CLI configuration with tabs for:
 
 ## Dev prerequisites
 
-- Node.js + npm
-- Rust toolchain
-- Tauri Linux dependencies (webkit2gtk, etc.)
+### JavaScript dependencies
+```bash
+npm install
+```
+
+### Native system dependencies (Linux Mint/Ubuntu)
+
+Tauri requires WebKitGTK and build tools. Install with:
+
+```bash
+sudo apt update
+sudo apt install -y \
+  libwebkit2gtk-4.1-dev \
+  libjavascriptcoregtk-4.1-dev \
+  build-essential \
+  curl \
+  wget \
+  file \
+  libxdo-dev \
+  libssl-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  libgtk-3-dev \
+  pkg-config \
+  libglib2.0-dev
+```
+
+Or use the one-shot helper script:
+```bash
+curl -sSf https://raw.githubusercontent.com/tauri-apps/tauri/master/.github/scripts/apt-install.sh | sudo bash
+```
+
+### Rust
+```bash
+curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf | sh
+# Restart terminal after installation
+```
 
 ## Run
 

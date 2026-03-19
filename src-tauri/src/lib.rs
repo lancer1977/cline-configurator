@@ -106,8 +106,8 @@ fn backup_config() -> BackupResult {
         Err(e) => return BackupResult { success: false, backup_path: None, error: Some(e) },
     };
 
-    if let Err(e) = ensure_parent(&backups) {
-        return BackupResult { success: false, backup_path: None, error: Some(e) };
+    if let Err(e) = fs::create_dir_all(&backups) {
+        return BackupResult { success: false, backup_path: None, error: Some(format!("Failed to create backups dir: {}", e)) };
     }
 
     let timestamp = chrono_lite_timestamp();
@@ -198,10 +198,10 @@ fn list_backups() -> Result<Vec<BackupFile>, String> {
                 .strip_prefix("config-")
                 .and_then(|s| s.strip_suffix(".json"))
                 .map(|s| {
-                    if s.len() >= 15 {
-                        format!("{}-{}-{} {}:{}:{}",
-                            &s[0..4], &s[4..6], &s[6..8],
-                            &s[8..10], &s[10..12], &s[12..14])
+                    // Keep exact timestamp format from filename for predictable UI display
+                    // Example: "2026-03-11-134500" -> "2026-03-11 13:45:00"
+                    if s.len() == 17 {
+                        format!("{} {}:{}:{}", &s[0..10], &s[11..13], &s[13..15], &s[15..17])
                     } else {
                         s.to_string()
                     }
@@ -233,6 +233,15 @@ struct RestoreResult {
 
 #[tauri::command]
 fn restore_config(backup_filename: String) -> RestoreResult {
+    if backup_filename.contains('/') || backup_filename.contains('\\') || backup_filename.contains("..") {
+        return RestoreResult {
+            success: false,
+            restored_from: None,
+            auto_backup_path: None,
+            error: Some("Invalid backup filename".to_string()),
+        };
+    }
+
     let backups = match backups_dir() {
         Ok(b) => b,
         Err(e) => return RestoreResult { success: false, restored_from: None, auto_backup_path: None, error: Some(e) },
@@ -551,6 +560,58 @@ async fn generate_recommendations(
     }
 
     Ok("No recommendation text returned by model.".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_home() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("cline-configurator-test-{}", nanos))
+    }
+
+    #[test]
+    fn backup_config_missing_file_returns_error() {
+        let home = unique_test_home();
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("HOME", &home);
+
+        let result = backup_config();
+
+        assert!(!result.success);
+        assert!(result.backup_path.is_none());
+        assert!(result.error.unwrap_or_default().contains("Config file not found"));
+    }
+
+    #[test]
+    fn backup_config_creates_timestamped_valid_json_backup() {
+        let home = unique_test_home();
+        let cline = home.join(".config").join("cline");
+        std::fs::create_dir_all(&cline).expect("create cline dir");
+        std::env::set_var("HOME", &home);
+
+        let config = r#"{"provider":"ollama","ollama":{"baseUrl":"http://localhost:11434","model":"qwen2.5-coder:14b"}}"#;
+        std::fs::write(cline.join("config.json"), config).expect("write config");
+
+        let result = backup_config();
+
+        assert!(result.success);
+        let backup_path = PathBuf::from(result.backup_path.expect("backup path"));
+        assert!(backup_path.exists());
+
+        let backup_name = backup_path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        assert!(backup_name.starts_with("config-"));
+        assert!(backup_name.ends_with(".json"));
+
+        let backup_content = std::fs::read_to_string(&backup_path).expect("read backup");
+        let parsed: Value = serde_json::from_str(&backup_content).expect("valid json");
+        assert_eq!(parsed["provider"], "ollama");
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
