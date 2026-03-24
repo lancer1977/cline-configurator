@@ -3,7 +3,6 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri::Manager;
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -611,6 +610,250 @@ mod tests {
         let backup_content = std::fs::read_to_string(&backup_path).expect("read backup");
         let parsed: Value = serde_json::from_str(&backup_content).expect("valid json");
         assert_eq!(parsed["provider"], "ollama");
+    }
+
+    // ============================================
+    // SMOKE TESTS: Restore Behavior
+    // ============================================
+
+    #[test]
+    fn restore_config_missing_backup_returns_error() {
+        let home = unique_test_home();
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("HOME", &home);
+
+        let result = restore_config("nonexistent-backup.json".to_string());
+
+        assert!(!result.success);
+        assert!(result.error.unwrap_or_default().contains("Backup file not found"));
+    }
+
+    #[test]
+    fn restore_config_with_valid_backup_restores_and_creates_pre_restore_backup() {
+        let home = unique_test_home();
+        let cline = home.join(".config").join("cline");
+        let backups = cline.join("backups");
+        std::fs::create_dir_all(&backups).expect("create backups dir");
+        std::env::set_var("HOME", &home);
+
+        // Create original config
+        let original_config = r#"{"provider":"ollama","ollama":{"baseUrl":"http://localhost:11434","model":"original-model"}}"#;
+        std::fs::write(cline.join("config.json"), original_config).expect("write original config");
+
+        // Create backup file
+        let backup_content = r#"{"provider":"ollama","ollama":{"baseUrl":"http://localhost:11434","model":"backup-model"}}"#;
+        std::fs::write(backups.join("config-2026-03-24-120000.json"), backup_content).expect("write backup");
+
+        let result = restore_config("config-2026-03-24-120000.json".to_string());
+
+        assert!(result.success);
+        assert!(result.restored_from.is_some());
+
+        // Verify config was restored
+        let restored = std::fs::read_to_string(cline.join("config.json")).expect("read restored config");
+        let parsed: Value = serde_json::from_str(&restored).expect("valid json");
+        assert_eq!(parsed["ollama"]["model"], "backup-model");
+
+        // Verify pre-restore backup was created
+        assert!(result.auto_backup_path.is_some());
+        let pre_restore = PathBuf::from(result.auto_backup_path.unwrap());
+        assert!(pre_restore.exists());
+        let pre_content = std::fs::read_to_string(&pre_restore).expect("read pre-restore");
+        let pre_parsed: Value = serde_json::from_str(&pre_content).expect("valid pre-restore json");
+        assert_eq!(pre_parsed["ollama"]["model"], "original-model");
+    }
+
+    #[test]
+    fn restore_config_rejects_path_traversal() {
+        let result = restore_config("../etc/passwd".to_string());
+        assert!(!result.success);
+        assert!(result.error.unwrap_or_default().contains("Invalid backup filename"));
+
+        let result2 = restore_config("subdir/backup.json".to_string());
+        assert!(!result2.success);
+        assert!(result2.error.unwrap_or_default().contains("Invalid backup filename"));
+    }
+
+    #[test]
+    fn list_backups_empty_when_no_backups_dir() {
+        let home = unique_test_home();
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("HOME", &home);
+
+        let result = list_backups();
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_backups_returns_sorted_backup_files() {
+        // Use a unique subdir to avoid HOME race conditions
+        let test_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!("cline-test-home-{}", test_id));
+        let cline = home.join(".config").join("cline");
+        let backups = cline.join("backups");
+        std::fs::create_dir_all(&backups).expect("create backups dir");
+
+        // Set HOME for this test process (dirs::home_dir reads $HOME on Linux)
+        std::env::set_var("HOME", &home);
+
+        // Create multiple backup files
+        std::fs::write(backups.join("config-2026-03-24-100000.json"), "{}").expect("write backup 1");
+        std::fs::write(backups.join("config-2026-03-24-120000.json"), "{}").expect("write backup 2");
+        std::fs::write(backups.join("config-2026-03-24-110000.json"), "{}").expect("write backup 3");
+
+        let result = list_backups().expect("list backups");
+
+        assert_eq!(result.len(), 3, "Expected 3 backups, got {}", result.len());
+        // Should be sorted newest first (by filename descending)
+        assert_eq!(result[0].filename, "config-2026-03-24-120000.json");
+        assert_eq!(result[1].filename, "config-2026-03-24-110000.json");
+        assert_eq!(result[2].filename, "config-2026-03-24-100000.json");
+
+        // Cleanup
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    // ============================================
+    // SMOKE TESTS: Config/Rule File Load/Save
+    // ============================================
+
+    #[test]
+    fn save_core_config_creates_config_and_env_files() {
+        let home = unique_test_home();
+        std::env::set_var("HOME", &home);
+
+        let config = ConfigJson {
+            provider: "ollama".to_string(),
+            ollama: OllamaConfig {
+                base_url: "http://localhost:11434".to_string(),
+                model: "test-model".to_string(),
+            },
+        };
+
+        let mut env = BTreeMap::new();
+        env.insert("TEST_VAR".to_string(), "test_value".to_string());
+
+        let result = save_core_config(config, env);
+        assert!(result.is_ok());
+
+        // Verify files were created
+        let config_path = home.join(".config").join("cline").join("config.json");
+        let env_path = home.join(".config").join("cline").join("cline.env");
+
+        assert!(config_path.exists());
+        assert!(env_path.exists());
+
+        let config_content = std::fs::read_to_string(&config_path).expect("read config");
+        let parsed: Value = serde_json::from_str(&config_content).expect("valid json");
+        assert_eq!(parsed["provider"], "ollama");
+
+        let env_content = std::fs::read_to_string(&env_path).expect("read env");
+        assert!(env_content.contains("TEST_VAR=test_value"));
+    }
+
+    #[test]
+    fn save_hooks_creates_hook_files() {
+        let home = unique_test_home();
+        std::env::set_var("HOME", &home);
+
+        let result = save_hooks("#!/bin/bash\necho pre".to_string(), "#!/bin/bash\necho post".to_string());
+        assert!(result.is_ok());
+
+        let pre_hook = home.join(".config").join("cline").join("hooks").join("pre_run.sh");
+        let post_hook = home.join(".config").join("cline").join("hooks").join("post_run.sh");
+
+        assert!(pre_hook.exists());
+        assert!(post_hook.exists());
+
+        let pre_content = std::fs::read_to_string(&pre_hook).expect("read pre hook");
+        assert!(pre_content.contains("echo pre"));
+    }
+
+    #[test]
+    fn load_app_state_creates_default_files_when_missing() {
+        let home = unique_test_home();
+        std::env::set_var("HOME", &home);
+
+        let result = load_app_state();
+        assert!(result.is_ok());
+
+        let state = result.unwrap();
+        assert_eq!(state.config.provider, "ollama");
+        assert!(state.env.contains_key("CLINE_MODEL_PROVIDER"));
+
+        // Verify default files were created
+        let config_path = home.join(".config").join("cline").join("config.json");
+        let env_path = home.join(".config").join("cline").join("cline.env");
+        assert!(config_path.exists());
+        assert!(env_path.exists());
+    }
+
+    #[test]
+    fn load_app_state_reads_existing_files() {
+        // Use a unique subdir to avoid HOME race conditions
+        let test_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!("cline-test-home-{}", test_id));
+        let cline = home.join(".config").join("cline");
+        std::fs::create_dir_all(&cline).expect("create cline dir");
+
+        // Set HOME for this test process
+        std::env::set_var("HOME", &home);
+
+        let config = r#"{"provider":"custom","ollama":{"baseUrl":"http://custom:11434","model":"custom-model"}}"#;
+        std::fs::write(cline.join("config.json"), config).expect("write config");
+
+        std::fs::write(cline.join("cline.env"), "CLINE_MODEL_PROVIDER=custom\nCUSTOM_VAR=value\n").expect("write env");
+
+        let result = load_app_state().expect("load state");
+
+        assert_eq!(result.config.provider, "custom", "Expected custom provider, got {}", result.config.provider);
+        assert_eq!(result.config.ollama.model, "custom-model");
+        assert!(result.env.contains_key("CUSTOM_VAR"));
+        assert_eq!(result.env.get("CUSTOM_VAR").unwrap(), "value");
+
+        // Cleanup
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn read_and_write_text_file_roundtrip() {
+        let temp = std::env::temp_dir().join(format!("test-roundtrip-{}", std::process::id()));
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+
+        let test_file = temp.join("test.txt");
+        let path = test_file.to_string_lossy().to_string();
+
+        // Write
+        let write_result = write_text_file(path.clone(), "test content\nline 2".to_string());
+        assert!(write_result.is_ok());
+
+        // Read back
+        let read_result = read_text_file(path);
+        assert!(read_result.is_ok());
+        assert_eq!(read_result.unwrap(), "test content\nline 2");
+
+        // Cleanup
+        std::fs::remove_dir_all(&temp).ok();
+    }
+
+    #[test]
+    fn write_text_file_creates_parent_directories() {
+        let temp = std::env::temp_dir().join(format!("test-parent-{}", std::process::id()));
+        let nested = temp.join("a").join("b").join("c").join("test.txt");
+        let path = nested.to_string_lossy().to_string();
+
+        let result = write_text_file(path.clone(), "nested content".to_string());
+        assert!(result.is_ok());
+        assert!(nested.exists());
+
+        std::fs::remove_dir_all(&temp).ok();
     }
 }
 

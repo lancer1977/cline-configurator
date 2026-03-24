@@ -36,3 +36,6 @@ jobs:
 
       - name: Rust check (Tauri backend)
         run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Rust tests (Tauri backend smoke tests)
+        run: cargo test --lib --manifest-path src-tauri/Cargo.toml -- --nocapture --test-threads=1
