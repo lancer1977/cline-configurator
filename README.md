@@ -78,3 +78,9 @@ npm run build
 - Recommendations call Ollama at `config.ollama.baseUrl` using `/api/generate`.
 - Model list uses `/api/tags`.
 - Rules tab scans both repo-local `.cline/**/*.md` and global rules directory (`~/Documents/Cline/Rules`).
+
+
+## 📖 Documentation
+Detailed documentation can be found in the following sections:
+- [Feature Index](./docs/features/README.md)
+- [Core Capabilities](./docs/features/core-capabilities.md)
